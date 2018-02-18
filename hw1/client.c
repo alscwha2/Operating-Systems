@@ -61,12 +61,31 @@ void GET(int clientfd, char *path) {
   send(clientfd, req, strlen(req), 0);
 }
 
+void await_request(int clientfd) {
+  char buf[BUF_SIZE];
+  while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
+    fputs(buf, stdout);
+    memset(buf, 0, BUF_SIZE);
+  }
+}
+
+
+
 int main(int argc, char **argv) {
   int clientfd;
-  char buf[BUF_SIZE];
-
-  if (argc != 4) {
-    fprintf(stderr, "USAGE: ./httpclient <hostname> <port> <request path>\n");
+  //test for correct number of arguments
+  if (argc != 6 && argc != 7) {
+    fprintf(stderr, "USAGE: ./httpclient <hostname> <port> <number threads> <schedalg> <request path> <op: reqpath2>\n");
+    return 1;
+  }
+  //test for valid number of threads (input)
+  if (atoi(argv[3]) < 1) {
+    fprintf(stderr, "ERROR: Must specify a positive number of threads\n");
+    return 1;
+  }
+  //test input for valid workload
+  if (strcmp(argv[4], "CONCUR") != 0 && strcmp(argv[4], "FIFO") != 0) {
+    fprintf(stderr, "%s\n", "ERROR: Must specify a valid sceduling algorithms, either \"CONCUR\" or \"FIFO\"");
     return 1;
   }
 
@@ -75,16 +94,14 @@ int main(int argc, char **argv) {
   if (clientfd == -1) {
     fprintf(stderr,
             "[main:73] Failed to connect to: %s:%s%s \n",
-            argv[1], argv[2], argv[3]);
+            argv[1], argv[2], argv[5]);
     return 3;
   }
 
   // Send GET request > stdout
-  GET(clientfd, argv[3]);
-  while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
-    fputs(buf, stdout);
-    memset(buf, 0, BUF_SIZE);
-  }
+  GET(clientfd, argv[5]);
+  //wait for the response for the GET request
+  await_request(clientfd);
 
   close(clientfd);
   return 0;
