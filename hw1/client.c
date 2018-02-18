@@ -5,6 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <pthread.h>
+
 /* Network */
 #include <netdb.h>
 #include <sys/socket.h>
@@ -69,10 +71,34 @@ void await_request(int clientfd) {
   }
 }
 
+void concur(int clientfd, int numthreads, char *file1, char *file2) {
+  // Send GET request > stdout
+  GET(clientfd, file1);
+  //wait for the response for the GET request
+  await_request(clientfd);
+
+  close(clientfd);
+}
+
+void fifo(int clientfd, int numthreads, char *file1, char *file2) {
+  // Send GET request > stdout
+  GET(clientfd, file1);
+  //wait for the response for the GET request
+  await_request(clientfd);
+
+  close(clientfd);
+}
+
 
 
 int main(int argc, char **argv) {
   int clientfd;
+  int numthreads;
+  char *file1;
+  char *file2;
+
+  /***** TESTING FOR VALID INPUT *****/
+
   //test for correct number of arguments
   if (argc != 6 && argc != 7) {
     fprintf(stderr, "USAGE: ./httpclient <hostname> <port> <number threads> <schedalg> <request path> <op: reqpath2>\n");
@@ -83,7 +109,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "ERROR: Must specify a positive number of threads\n");
     return 1;
   }
-  //test input for valid workload
+  //test input for valid scheduling algorithm
   if (strcmp(argv[4], "CONCUR") != 0 && strcmp(argv[4], "FIFO") != 0) {
     fprintf(stderr, "%s\n", "ERROR: Must specify a valid sceduling algorithms, either \"CONCUR\" or \"FIFO\"");
     return 1;
@@ -98,11 +124,26 @@ int main(int argc, char **argv) {
     return 3;
   }
 
-  // Send GET request > stdout
-  GET(clientfd, argv[5]);
-  //wait for the response for the GET request
-  await_request(clientfd);
+  /***** STORING ARGUMENTS IN VARIABLES ****/
+  numthreads = atoi(argv[3]);
+  file1 = argv[5];
 
-  close(clientfd);
+  //store the name of the second file in variable, NULL if no second file
+  switch(argc) {
+    case 6:
+      file2 = NULL;
+      break;
+    case 7:
+      file2 = argv[6];
+      break;
+    default:
+      file2 = NULL;
+  }
+
+  /***** EXECUTE WITH SCHEDULING ALGORITHM ****/
+  if (strcmp(argv[4], "CONCUR") == 0) concur(clientfd, numthreads, file1, file2);
+  if (strcmp(argv[4], "FIFO") == 0) fifo(clientfd, numthreads, file1, file2);
+
+
   return 0;
 }
