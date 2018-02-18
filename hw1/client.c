@@ -13,6 +13,8 @@
 
 #define BUF_SIZE 100
 
+int clientfd;
+
 // Get host information (used to establishConnection)
 struct addrinfo *getHostInfo(char* host, char* port) {
   int r;
@@ -57,13 +59,13 @@ int establishConnection(struct addrinfo *info) {
 }
 
 // Send GET request
-void GET(int clientfd, char *path) {
+void GET(char *path) {
   char req[1000] = {0};
   sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
   send(clientfd, req, strlen(req), 0);
 }
 
-void await_request(int clientfd) {
+void await_request() {
   char buf[BUF_SIZE];
   while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
     fputs(buf, stdout);
@@ -71,20 +73,26 @@ void await_request(int clientfd) {
   }
 }
 
-void concur(int clientfd, int numthreads, char *file1, char *file2) {
+void concur(int numthreads, char *file1, char *file2) {
+  /*
+  pthread_barrier_t sendbarrier;
+  pthread_barrier_init(*sendbarrier, NULL, numthreads);
+  pthread_t thread_id[numthreads];
+  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, TF, NULL);
+  */
   // Send GET request > stdout
-  GET(clientfd, file1);
+  GET(file1);
   //wait for the response for the GET request
-  await_request(clientfd);
+  await_request();
 
   close(clientfd);
 }
 
-void fifo(int clientfd, int numthreads, char *file1, char *file2) {
+void fifo(int numthreads, char *file1, char *file2) {
   // Send GET request > stdout
-  GET(clientfd, file1);
+  GET(file1);
   //wait for the response for the GET request
-  await_request(clientfd);
+  await_request();
 
   close(clientfd);
 }
@@ -92,7 +100,6 @@ void fifo(int clientfd, int numthreads, char *file1, char *file2) {
 
 
 int main(int argc, char **argv) {
-  int clientfd;
   int numthreads;
   char *file1;
   char *file2;
@@ -141,8 +148,8 @@ int main(int argc, char **argv) {
   }
 
   /***** EXECUTE WITH SCHEDULING ALGORITHM ****/
-  if (strcmp(argv[4], "CONCUR") == 0) concur(clientfd, numthreads, file1, file2);
-  if (strcmp(argv[4], "FIFO") == 0) fifo(clientfd, numthreads, file1, file2);
+  if (strcmp(argv[4], "CONCUR") == 0) concur(numthreads, file1, file2);
+  if (strcmp(argv[4], "FIFO") == 0) fifo(numthreads, file1, file2);
 
 
   return 0;
