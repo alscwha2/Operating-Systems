@@ -16,8 +16,10 @@
 int clientfd;
 char *host;
 char *portnum;
+char *schedalg;
 
 pthread_barrier_t barrier;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Get host information (used to establishConnection)
 struct addrinfo *getHostInfo(char* host, char* port) {
@@ -63,7 +65,7 @@ int establishConnection(struct addrinfo *info) {
 }
 
 // Send GET request
-void cGET( char *path) {
+void GET( char *path) {
   /**** Establish connection with <hostname>:<port> ***/
   clientfd = establishConnection(getHostInfo(host, portnum));
   if (clientfd == -1) {
@@ -75,14 +77,39 @@ void cGET( char *path) {
 
   /*** SEND REQUEST ***/
 
-  //don't send the request until everyone has made their connections 
-  //  so that everyone can do it simultaneusly
-  pthread_barrier_wait(&barrier);
+  /* CONCUR
+   * don't send the request until everyone has made their connections 
+   *  so that everyone can do it simultaneusly
+   */
+  if(strcmp(schedalg, "CONCUR") == 0) {
+    //wait at barrier
+    pthread_barrier_wait(&barrier);
+    //send
+    char req[1000] = {0};
+    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
+    send(clientfd, req, strlen(req), 0);
+  }
 
-  char req[1000] = {0};
-  sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
-  send(clientfd, req, strlen(req), 0);
+  /*
+   * FIFO
+   *use a mutex to make sure that only one thread can send a request at a time
+    */
+  if(strcmp(schedalg, "FIFO") == 0) {
+    //set mutex
+    pthread_mutex_lock(&mutex);
 
+    //send
+    char req[1000] = {0};
+    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
+    send(clientfd, req, strlen(req), 0);
+
+    //unlock the nutex so that the next thread can run.
+    if(strcmp(schedalg, "FIFO") == 0) pthread_mutex_unlock(&mutex);
+  }
+
+  /*
+   * BOTH FIFO AND CONCUR 
+   */
   /**** AWAIT RESULT ***/
 
   //don't accept responses until everyone has sent the get request
@@ -99,34 +126,11 @@ void cGET( char *path) {
   pthread_barrier_wait(&barrier);
 }
 
-void * cLoop(void *filepath) {
+void * loop(void *filepath) {
   char *path = (char *) filepath;
-  while(1) cGET(path);
+  while(1) GET(path);
   return "Success";
 }
-
-void concur(int numthreads, char *file1, char *file2) {
-  pthread_barrier_init(&barrier, NULL, numthreads);
-  
-  printf("%d\n", numthreads);
-  pthread_t thread_id[numthreads];
-  for (int i = 0; i < numthreads; i++) {
-    pthread_create(&thread_id[i], NULL, cLoop, file1);
-  }
-  for (int i = 0; i < numthreads; i++) pthread_join(thread_id[i], NULL);
-  close(clientfd);
-}
-
-int fifo(int numthreads, char *file1, char *file2) {
-  // Send GET request > stdout
-  cGET(file1);
-  cGET(file1);
-
-  close(clientfd);
-  return 0;
-}
-
-
 
 int main(int argc, char **argv) {
   int numthreads;
@@ -155,6 +159,7 @@ int main(int argc, char **argv) {
   host = argv[1];
   portnum = argv[2];
   numthreads = atoi(argv[3]);
+  schedalg = argv[4];
   file1 = argv[5];
 
   //store the name of the second file in variable, NULL if no second file
@@ -170,7 +175,19 @@ int main(int argc, char **argv) {
   }
 
   /***** EXECUTE WITH SCHEDULING ALGORITHM ****/
-  if (strcmp(argv[4], "FIFO") == 0) fifo(numthreads, file1, file2);
-  if (strcmp(argv[4], "CONCUR") == 0) concur(numthreads, file1, file2);
+
+  //get the barrier ready
+  pthread_barrier_init(&barrier, NULL, numthreads);
+  
+  //create (and run) the threads. The code they will be executing is in the loop() method
+  pthread_t thread_id[numthreads];
+  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, loop, file1);
+
+  //don't exit until all of the threads finish (not going to happen...)
+  for (int i = 0; i < numthreads; i++) pthread_join(thread_id[i], NULL);
+  close(clientfd);
+
+  //delete this line later
+  file1 = file2;
   return 0;
 }
