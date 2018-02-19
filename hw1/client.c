@@ -14,6 +14,10 @@
 #define BUF_SIZE 100
 
 int clientfd;
+char *host;
+char *portnum;
+
+pthread_barrier_t barrier;
 
 // Get host information (used to establishConnection)
 struct addrinfo *getHostInfo(char* host, char* port) {
@@ -59,42 +63,67 @@ int establishConnection(struct addrinfo *info) {
 }
 
 // Send GET request
-void GET(char *path) {
+void cGET( char *path) {
+  /**** Establish connection with <hostname>:<port> ***/
+  clientfd = establishConnection(getHostInfo(host, portnum));
+  if (clientfd == -1) {
+    fprintf(stderr,
+            "[main:73] Failed to connect to: %s:%s%s \n",
+            host, portnum, path);
+    //return 3;
+  }
+
+  /*** SEND REQUEST ***/
+
+  //don't send the request until everyone has made their connections 
+  //  so that everyone can do it simultaneusly
+  pthread_barrier_wait(&barrier);
+
   char req[1000] = {0};
   sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
   send(clientfd, req, strlen(req), 0);
-}
 
-void await_request() {
+  /**** AWAIT RESULT ***/
+
+  //don't accept responses until everyone has sent the get request
+  pthread_barrier_wait(&barrier);
+
+  //wait to recieve
   char buf[BUF_SIZE];
   while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
     fputs(buf, stdout);
     memset(buf, 0, BUF_SIZE);
   }
+
+  //don't move on until everyone has recieved their responses
+  pthread_barrier_wait(&barrier);
+}
+
+void * cLoop(void *filepath) {
+  char *path = (char *) filepath;
+  while(1) cGET(path);
+  return "Success";
 }
 
 void concur(int numthreads, char *file1, char *file2) {
-  /*
-  pthread_barrier_t sendbarrier;
-  pthread_barrier_init(*sendbarrier, NULL, numthreads);
+  pthread_barrier_init(&barrier, NULL, numthreads);
+  
+  printf("%d\n", numthreads);
   pthread_t thread_id[numthreads];
-  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, TF, NULL);
-  */
-  // Send GET request > stdout
-  GET(file1);
-  //wait for the response for the GET request
-  await_request();
-
+  for (int i = 0; i < numthreads; i++) {
+    pthread_create(&thread_id[i], NULL, cLoop, file1);
+  }
+  for (int i = 0; i < numthreads; i++) pthread_join(thread_id[i], NULL);
   close(clientfd);
 }
 
-void fifo(int numthreads, char *file1, char *file2) {
+int fifo(int numthreads, char *file1, char *file2) {
   // Send GET request > stdout
-  GET(file1);
-  //wait for the response for the GET request
-  await_request();
+  cGET(file1);
+  cGET(file1);
 
   close(clientfd);
+  return 0;
 }
 
 
@@ -122,16 +151,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Establish connection with <hostname>:<port>
-  clientfd = establishConnection(getHostInfo(argv[1], argv[2]));
-  if (clientfd == -1) {
-    fprintf(stderr,
-            "[main:73] Failed to connect to: %s:%s%s \n",
-            argv[1], argv[2], argv[5]);
-    return 3;
-  }
-
   /***** STORING ARGUMENTS IN VARIABLES ****/
+  host = argv[1];
+  portnum = argv[2];
   numthreads = atoi(argv[3]);
   file1 = argv[5];
 
@@ -148,9 +170,7 @@ int main(int argc, char **argv) {
   }
 
   /***** EXECUTE WITH SCHEDULING ALGORITHM ****/
-  if (strcmp(argv[4], "CONCUR") == 0) concur(numthreads, file1, file2);
   if (strcmp(argv[4], "FIFO") == 0) fifo(numthreads, file1, file2);
-
-
+  if (strcmp(argv[4], "CONCUR") == 0) concur(numthreads, file1, file2);
   return 0;
 }
