@@ -13,13 +13,20 @@
 
 #define BUF_SIZE 100
 
-int clientfd;
 char *host;
 char *portnum;
 char *schedalg;
 
+char *currentfile;
+char *file1;
+char *file2;
+
 pthread_barrier_t barrier;
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t fifo_send_mutex = PTHREAD_MUTEX_INITIALIZER;
+/*
+pthread_mutex_t request_mutex = PTHREAD_MUTEX_INITIALIZER;
+*/
+pthread_mutex_t recieve_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Get host information (used to establishConnection)
 struct addrinfo *getHostInfo(char* host, char* port) {
@@ -67,7 +74,7 @@ int establishConnection(struct addrinfo *info) {
 // Send GET request
 void GET( char *path) {
   /**** Establish connection with <hostname>:<port> ***/
-  clientfd = establishConnection(getHostInfo(host, portnum));
+  int clientfd = establishConnection(getHostInfo(host, portnum));
   if (clientfd == -1) {
     fprintf(stderr,
             "[main:73] Failed to connect to: %s:%s%s \n",
@@ -85,9 +92,20 @@ void GET( char *path) {
     //wait at barrier
     pthread_barrier_wait(&barrier);
     //send
+    /*
+    pthread_mutex_lock(&request_mutex);
+    */
     char req[1000] = {0};
     sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
     send(clientfd, req, strlen(req), 0);
+    /*
+    if(file2 != NULL) {
+      file1 = file2;
+      file2 = currentfile;
+      currentfile = file1;
+    }
+    pthread_mutex_unlock(&request_mutex);
+    */
   }
 
   /*
@@ -96,15 +114,20 @@ void GET( char *path) {
     */
   if(strcmp(schedalg, "FIFO") == 0) {
     //set mutex
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&fifo_send_mutex);
 
     //send
     char req[1000] = {0};
-    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
+    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", currentfile);
     send(clientfd, req, strlen(req), 0);
+    if(file2 != NULL) {
+      file1 = file2;
+      file2 = currentfile;
+      currentfile = file1;
+    }
 
     //unlock the nutex so that the next thread can run.
-    if(strcmp(schedalg, "FIFO") == 0) pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&fifo_send_mutex);
   }
 
   /*
@@ -117,25 +140,33 @@ void GET( char *path) {
 
   //wait to recieve
   char buf[BUF_SIZE];
+  pthread_mutex_lock(&recieve_mutex);
+  printf("\n%s%ld\n", "THREAD: ", pthread_self());
   while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
     fputs(buf, stdout);
     memset(buf, 0, BUF_SIZE);
   }
+  close(clientfd);
+  pthread_mutex_unlock(&recieve_mutex);
 
   //don't move on until everyone has recieved their responses
   pthread_barrier_wait(&barrier);
 }
 
+/*
+ * 
+ *
+ *
+ */
 void * loop(void *filepath) {
-  char *path = (char *) filepath;
-  while(1) GET(path);
+  while(1) {
+    GET(currentfile);
+  }
   return "Success";
 }
 
 int main(int argc, char **argv) {
   int numthreads;
-  char *file1;
-  char *file2;
 
   /***** TESTING FOR VALID INPUT *****/
 
@@ -161,6 +192,9 @@ int main(int argc, char **argv) {
   numthreads = atoi(argv[3]);
   schedalg = argv[4];
   file1 = argv[5];
+  file2 = NULL;
+  if(argc == 7) file2 = argv[6];
+  currentfile = file1;
 
   //store the name of the second file in variable, NULL if no second file
   switch(argc) {
@@ -181,13 +215,9 @@ int main(int argc, char **argv) {
   
   //create (and run) the threads. The code they will be executing is in the loop() method
   pthread_t thread_id[numthreads];
-  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, loop, file1);
+  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, loop, NULL);
 
   //don't exit until all of the threads finish (not going to happen...)
   for (int i = 0; i < numthreads; i++) pthread_join(thread_id[i], NULL);
-  close(clientfd);
-
-  //delete this line later
-  file1 = file2;
   return 0;
 }
