@@ -23,9 +23,7 @@ char *file2;
 
 pthread_barrier_t barrier;
 pthread_mutex_t fifo_send_mutex = PTHREAD_MUTEX_INITIALIZER;
-/*
-pthread_mutex_t request_mutex = PTHREAD_MUTEX_INITIALIZER;
-*/
+pthread_mutex_t concur_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t recieve_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Get host information (used to establishConnection)
@@ -72,13 +70,13 @@ int establishConnection(struct addrinfo *info) {
 }
 
 // Send GET request
-void GET( char *path) {
+void GET( char *null) {
   /**** Establish connection with <hostname>:<port> ***/
   int clientfd = establishConnection(getHostInfo(host, portnum));
   if (clientfd == -1) {
     fprintf(stderr,
-            "[main:73] Failed to connect to: %s:%s%s \n",
-            host, portnum, path);
+            "[main:73] Failed to connect to: %s:%s \n",
+            host, portnum);
     //return 3;
   }
 
@@ -89,23 +87,26 @@ void GET( char *path) {
    *  so that everyone can do it simultaneusly
    */
   if(strcmp(schedalg, "CONCUR") == 0) {
-    //wait at barrier
-    pthread_barrier_wait(&barrier);
-    //send
-    /*
-    pthread_mutex_lock(&request_mutex);
-    */
-    char req[1000] = {0};
-    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", path);
-    send(clientfd, req, strlen(req), 0);
-    /*
+
+    //the following block of code is to ensure that the threads alternate
+    // between the two files, if two files are provided
+    char *file;
+    pthread_mutex_lock(&concur_file_mutex);
+    file = file1;
     if(file2 != NULL) {
       file1 = file2;
       file2 = currentfile;
       currentfile = file1;
     }
-    pthread_mutex_unlock(&request_mutex);
-    */
+    pthread_mutex_unlock(&concur_file_mutex);
+
+    //wait at barrier so that everyone sends requests at the same time
+    pthread_barrier_wait(&barrier);
+
+    //send
+    char req[1000] = {0};
+    sprintf(req, "GET %s HTTP/1.0\r\n\r\n", file);
+    send(clientfd, req, strlen(req), 0);
   }
 
   /*
@@ -139,6 +140,8 @@ void GET( char *path) {
   pthread_barrier_wait(&barrier);
 
   //wait to recieve
+  //The receipt is in a mutex to ensure that there is no interleaving between the printing of output
+  // between multiple threads.
   char buf[BUF_SIZE];
   pthread_mutex_lock(&recieve_mutex);
   printf("\n%s%ld\n", "THREAD: ", pthread_self());
@@ -153,16 +156,9 @@ void GET( char *path) {
   pthread_barrier_wait(&barrier);
 }
 
-/*
- * 
- *
- *
- */
-void * loop(void *filepath) {
-  while(1) {
-    GET(currentfile);
-  }
-  return "Success";
+void * loop(void *null) {
+  while(1) GET(currentfile);
+  return NULL;
 }
 
 int main(int argc, char **argv) {
