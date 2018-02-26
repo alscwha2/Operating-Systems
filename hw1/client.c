@@ -5,6 +5,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <fcntl.h>
+
 #include <pthread.h>
 
 /* Network */
@@ -20,6 +23,8 @@ char *schedalg;
 char *currentfile;
 char *file1;
 char *file2;
+
+long main_thread_id;
 
 pthread_barrier_t barrier;
 pthread_mutex_t fifo_send_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -69,6 +74,53 @@ int establishConnection(struct addrinfo *info) {
   return -1;
 }
 
+void run_with_error_checking(char *method_name, int error_code) {
+  /*
+   * If the error code is 0 then there's no error.
+   * The PTHREAD_BARRIER_SERIAL_THREAD value is also not an error
+   */
+  if (error_code == 0) return;
+  if (strcmp(method_name, "pthread_barrier_wait") == 0) if (error_code == PTHREAD_BARRIER_SERIAL_THREAD) return;
+
+  /*
+   * Check whether the failure warrants us to exit the thread.
+   */
+  int fatal = strcmp(method_name, "pthread_barrier_init") != 0 && strcmp(method_name, "pthread_create") != 0 && strcmp(method_name, "pthread_join") != 0;
+  char *fatal_string = fatal ? " FATAL (exiting thread)" : " RECOVERABLE";
+
+  /*
+   * Store the name of the thread. The parent thread is called MAIN_THREAD.
+   */
+  char thread_name_buf[20];
+  sprintf(thread_name_buf, "%ld", pthread_self());
+  char *thread_string = pthread_self() == main_thread_id ? "MAIN_THREAD" : thread_name_buf;
+
+  /*
+   * Construct the message
+   */
+  char error_message_buffer[200];
+
+  sprintf(error_message_buffer, "ERROR%s thread:%s method: %s, error_code: %d check man for description\n", fatal_string, thread_string, method_name, error_code);
+  fprintf(stderr, "%s", error_message_buffer);
+  //if the error is in one of the created threads, exit the thread
+
+  /*
+   * Send the message.
+   */
+
+  int fd ;
+  int dummy;
+  /* No checks here, nothing can be done with a failure anyway */
+  if((fd = open("nweb.log", O_CREAT| O_WRONLY | O_APPEND,0644)) >= 0) {
+    dummy = write(fd,error_message_buffer,strlen(error_message_buffer)); 
+    dummy = write(fd,"\n",1);
+    if (dummy == 1 && dummy != 1) printf("%s\n", "we should never have gotten to this point..."); //keep compiler happy
+    (void)close(fd);
+  }
+
+  if (fatal) pthread_exit(NULL);
+}
+
 // Send GET request
 void GET( char *null) {
   /**** Establish connection with <hostname>:<port> ***/
@@ -91,17 +143,17 @@ void GET( char *null) {
     //the following block of code is to ensure that the threads alternate
     // between the two files, if two files are provided
     char *file;
-    pthread_mutex_lock(&concur_file_mutex);
+    run_with_error_checking("pthread_mutex_lock", pthread_mutex_lock(&concur_file_mutex));
     file = file1;
     if(file2 != NULL) {
       file1 = file2;
       file2 = currentfile;
       currentfile = file1;
     }
-    pthread_mutex_unlock(&concur_file_mutex);
+    run_with_error_checking("pthread_mutex_unlock", pthread_mutex_unlock(&concur_file_mutex));
 
     //wait at barrier so that everyone sends requests at the same time
-    pthread_barrier_wait(&barrier);
+    run_with_error_checking("pthread_barrier_wait", pthread_barrier_wait(&barrier));
 
     //send
     char req[1000] = {0};
@@ -115,7 +167,7 @@ void GET( char *null) {
     */
   if(strcmp(schedalg, "FIFO") == 0) {
     //set mutex
-    pthread_mutex_lock(&fifo_send_mutex);
+    run_with_error_checking("pthread_mutex_lock", pthread_mutex_lock(&fifo_send_mutex));
 
     //send
     char req[1000] = {0};
@@ -128,7 +180,7 @@ void GET( char *null) {
     }
 
     //unlock the nutex so that the next thread can run.
-    pthread_mutex_unlock(&fifo_send_mutex);
+    run_with_error_checking("pthread_mutex_unlock", pthread_mutex_unlock(&fifo_send_mutex));
   }
 
   /*
@@ -137,23 +189,23 @@ void GET( char *null) {
   /**** AWAIT RESULT ***/
 
   //don't accept responses until everyone has sent the get request
-  pthread_barrier_wait(&barrier);
+  run_with_error_checking("pthread_barrier_wait", pthread_barrier_wait(&barrier));
 
   //wait to recieve
   //The receipt is in a mutex to ensure that there is no interleaving between the printing of output
   // between multiple threads.
   char buf[BUF_SIZE];
-  pthread_mutex_lock(&recieve_mutex);
+  run_with_error_checking("pthread_mutex_lock", pthread_mutex_lock(&recieve_mutex));
   printf("\n%s%ld\n", "THREAD: ", pthread_self());
   while (recv(clientfd, buf, BUF_SIZE, 0) > 0) {
     fputs(buf, stdout);
     memset(buf, 0, BUF_SIZE);
   }
   close(clientfd);
-  pthread_mutex_unlock(&recieve_mutex);
+  run_with_error_checking("pthread_mutex_unlock", pthread_mutex_unlock(&recieve_mutex));
 
   //don't move on until everyone has recieved their responses
-  pthread_barrier_wait(&barrier);
+  run_with_error_checking("pthread_barrier_wait", pthread_barrier_wait(&barrier));
 }
 
 void * loop(void *null) {
@@ -206,14 +258,16 @@ int main(int argc, char **argv) {
 
   /***** EXECUTE WITH SCHEDULING ALGORITHM ****/
 
+  main_thread_id = pthread_self();
+
   //get the barrier ready
-  pthread_barrier_init(&barrier, NULL, numthreads);
+  run_with_error_checking("pthread_barrier_init", pthread_barrier_init(&barrier, NULL, numthreads));
   
   //create (and run) the threads. The code they will be executing is in the loop() method
   pthread_t thread_id[numthreads];
-  for (int i = 0; i < numthreads; i++) pthread_create(&thread_id[i], NULL, loop, NULL);
+  for (int i = 0; i < numthreads; i++) run_with_error_checking("pthread_create", pthread_create(&thread_id[i], NULL, loop, NULL));
 
   //don't exit until all of the threads finish (not going to happen...)
-  for (int i = 0; i < numthreads; i++) pthread_join(thread_id[i], NULL);
+  for (int i = 0; i < numthreads; i++) run_with_error_checking("pthread_join" ,pthread_join(thread_id[i], NULL));
   return 0;
 }
