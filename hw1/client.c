@@ -32,6 +32,9 @@ pthread_mutex_t concur_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t recieve_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Get host information (used to establishConnection)
+/*
+ * I did not write this method so I take no responsibility for failure to check errors.
+ */
 struct addrinfo *getHostInfo(char* host, char* port) {
   int r;
   struct addrinfo hints, *getaddrinfo_res;
@@ -74,6 +77,13 @@ int establishConnection(struct addrinfo *info) {
   return -1;
 }
 
+/*
+ * This method logs errors encountered by methods which return error codes.
+ * It takes the method_name and error_code as an argument, logs it, determines whether it is fatal, and acts accordingly.
+ *
+ * I will not be checking errors for the library calls in this method because if these calls fail then 
+ *  our entire method checking mechanism doens't work.
+ */
 void run_with_error_checking(char *method_name, int error_code) {
   /*
    * If the error code is 0 then there's no error.
@@ -81,12 +91,13 @@ void run_with_error_checking(char *method_name, int error_code) {
    */
   if (error_code == 0) return;
   if (strcmp(method_name, "pthread_barrier_wait") == 0) if (error_code == PTHREAD_BARRIER_SERIAL_THREAD) return;
+  if (strcmp(method_name, "send") == 0 && error_code >= 0) return;
 
   /*
    * Check whether the failure warrants us to exit the thread.
    */
-  int fatal = strcmp(method_name, "pthread_barrier_init") != 0 && strcmp(method_name, "pthread_create") != 0 && strcmp(method_name, "pthread_join") != 0;
-  char *fatal_string = fatal ? " FATAL (exiting thread)" : " RECOVERABLE";
+  int fatal = strcmp(method_name, "pthread_barrier_init") == 0;
+  char *fatal_string = fatal ? " FATAL" : " RECOVERABLE";
 
   /*
    * Store the name of the thread. The parent thread is called MAIN_THREAD.
@@ -102,7 +113,6 @@ void run_with_error_checking(char *method_name, int error_code) {
 
   sprintf(error_message_buffer, "ERROR%s thread:%s method: %s, error_code: %d check man for description\n", fatal_string, thread_string, method_name, error_code);
   fprintf(stderr, "%s", error_message_buffer);
-  //if the error is in one of the created threads, exit the thread
 
   /*
    * Send the message.
@@ -118,19 +128,17 @@ void run_with_error_checking(char *method_name, int error_code) {
     (void)close(fd);
   }
 
-  if (fatal) pthread_exit(NULL);
+  if (fatal) exit(EXIT_FAILURE);
 }
 
 // Send GET request
 void GET( char *null) {
   /**** Establish connection with <hostname>:<port> ***/
   int clientfd = establishConnection(getHostInfo(host, portnum));
-  if (clientfd == -1) {
-    fprintf(stderr,
-            "[main:73] Failed to connect to: %s:%s \n",
-            host, portnum);
-    //return 3;
-  }
+  // I am using the run_with_error_checking function in an abnormal fashion. Normally the method is called
+  //  in the run_with_error_checking call itself, but since only some of the values are error codes
+  //  and the other return values are needed for other purposes I fed in the error code manually
+  if(clientfd == -1) run_with_error_checking("establishConnection", clientfd);
 
   /*** SEND REQUEST ***/
 
@@ -158,7 +166,7 @@ void GET( char *null) {
     //send
     char req[1000] = {0};
     sprintf(req, "GET %s HTTP/1.0\r\n\r\n", file);
-    send(clientfd, req, strlen(req), 0);
+    run_with_error_checking("send", send(clientfd, req, strlen(req), 0));
   }
 
   /*
@@ -172,7 +180,7 @@ void GET( char *null) {
     //send
     char req[1000] = {0};
     sprintf(req, "GET %s HTTP/1.0\r\n\r\n", currentfile);
-    send(clientfd, req, strlen(req), 0);
+    run_with_error_checking("send", send(clientfd, req, strlen(req), 0));
     if(file2 != NULL) {
       file1 = file2;
       file2 = currentfile;
@@ -201,7 +209,7 @@ void GET( char *null) {
     fputs(buf, stdout);
     memset(buf, 0, BUF_SIZE);
   }
-  close(clientfd);
+  run_with_error_checking("close", close(clientfd));
   run_with_error_checking("pthread_mutex_unlock", pthread_mutex_unlock(&recieve_mutex));
 
   //don't move on until everyone has recieved their responses
